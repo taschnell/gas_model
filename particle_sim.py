@@ -171,7 +171,7 @@ def get_speeds():
         time.sleep(1.5)
 
 def main():
-    v_rms = math.sqrt((3 * k_B * Target_Temp) / mass)
+    v_rms = math.sqrt((2 * k_B * Target_Temp) / mass)
     global particles
 
     pygame.init()
