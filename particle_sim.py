@@ -5,16 +5,15 @@ import threading
 import time
 
 # Constants
-SCREEN_WIDTH = 600
+SCREEN_WIDTH = 900
 SCREEN_HEIGHT = 900
 NUM_PARTICLES = 5000
-SIMULATION_RATE = 200  # Hz
+SIMULATION_RATE = 100  # Hz
 RENDER_RATE = 60       # FPS
 GRID_SIZE = 10         # Grid cell size in pixels
 k_B = 1.380649e-23     # Boltzmann constant in J/K
 mass = 4.65e-26        # Mass of nitrogen molecule (N2) in kg
 Target_Temp = 300      # Kelvin
-
 
 class Particle:
     def __init__(self, mass, x, y, velocity_x, velocity_y, radius):
@@ -29,13 +28,19 @@ class Particle:
         self.x += self.v_x * dt
         self.y += self.v_y * dt
 
+        wall_bounce = 0
+
         # Bounce off walls
         if self.x - self.r < 0 or self.x + self.r > SCREEN_WIDTH:
             self.v_x *= -1
             self.x = max(self.r, min(SCREEN_WIDTH - self.r, self.x))
+            wall_bounce += 1
         if self.y - self.r < 0 or self.y + self.r > SCREEN_HEIGHT:
             self.v_y *= -1
             self.y = max(self.r, min(SCREEN_HEIGHT - self.r, self.y))
+            wall_bounce += 1
+
+        return wall_bounce
 
     def draw(self, screen, color=(255, 0, 0)):
         pygame.draw.circle(screen, color, (int(self.x), int(self.y)), self.r)
@@ -89,28 +94,41 @@ class Particle:
 # Shared particle list and lock
 particles = []
 lock = threading.Lock()
+bounces = 0
 
 def get_cell(x, y):
     return int(x // GRID_SIZE), int(y // GRID_SIZE)
 
-
 def simulate():
+    global bounces
     dt = 1.0 / SIMULATION_RATE
+    perimeter = 2 * (SCREEN_WIDTH + SCREEN_HEIGHT)  # meters, since 1 pixel = 1 meter
+
+    t = 0
+    total_momentum_transfer = 0.0  # kg·m/s
+
     while True:
         with lock:
-            # Move particles
             for p in particles:
-                p.move(dt)
+                # Before move: store velocity for momentum transfer calc
+                old_vx, old_vy = p.v_x, p.v_y
+                wall_bounce = p.move(dt)
 
-            # Build spatial grid
+                # Calculate momentum transfer only if wall collision occurred
+                if wall_bounce:
+                    if p.x - p.r <= 0 or p.x + p.r >= SCREEN_WIDTH:
+                        total_momentum_transfer += 2 * p.m * abs(old_vx)
+                    if p.y - p.r <= 0 or p.y + p.r >= SCREEN_HEIGHT:
+                        total_momentum_transfer += 2 * p.m * abs(old_vy)
+
+                bounces += wall_bounce
+
+            # Spatial grid for particle collisions
             grid = {}
             for p in particles:
                 cell = get_cell(p.x, p.y)
-                if cell not in grid:
-                    grid[cell] = []
-                grid[cell].append(p)
+                grid.setdefault(cell, []).append(p)
 
-            # Check collisions only in local neighborhoods
             visited = set()
             for cell, cell_particles in grid.items():
                 neighbors = [
@@ -127,6 +145,21 @@ def simulate():
                                 a.resolve_collision(b)
                             visited.add((id(a), id(b)))
 
+        # Once per second
+        t += 1
+        if t % SIMULATION_RATE == 0:
+            pressure = total_momentum_transfer / perimeter  # in Pascals (N/m)
+            k_B = 1.38e-23
+            Target_Temp = 300  # Kelvin
+            ideal_pressure = (len(particles) * k_B * Target_Temp) / (900**2)
+            percent_diff = 100 * abs(pressure - ideal_pressure) / ideal_pressure
+            print(f"Bounces/sec: {bounces}, Actual Pressure: {pressure:.3e} Pa,  Ideal Pressure: {ideal_pressure:.3e}, Percent Diff: {percent_diff:.3}%")
+            bounces = 0
+            total_momentum_transfer = 0.0
+
+            
+
+
         time.sleep(dt)
 
 def get_speeds():
@@ -134,10 +167,8 @@ def get_speeds():
         with open("speeds.csv", "w") as file:
             for p in particles:
                 speed = math.sqrt(p.v_x ** 2 + p.v_y ** 2)
-                file.write(f"{speed}")
-                file.write("\n")
+                file.write(f"{speed}\n")
         time.sleep(1.5)
-
 
 def main():
     v_rms = math.sqrt((3 * k_B * Target_Temp) / mass)
@@ -151,16 +182,13 @@ def main():
     # Initialize particles
     for _ in range(NUM_PARTICLES):
         while True:
-
             angle = random.uniform(0, 2 * math.pi)
             v_x = v_rms * math.cos(angle)
             v_y = v_rms * math.sin(angle)
-
             x = random.uniform(10, SCREEN_WIDTH - 10)
             y = random.uniform(10, SCREEN_HEIGHT - 10)
             radius = 1
-            # Put one in the particle mass to simplify caculations
-            p = Particle(1 , x, y, v_x, v_y, radius)
+            p = Particle(mass, x, y, v_x, v_y, radius)
 
             if all(not p.check_collision(other) for other in particles):
                 particles.append(p)
